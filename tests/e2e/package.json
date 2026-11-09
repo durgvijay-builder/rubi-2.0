@@ -1,0 +1,26 @@
+{
+  "name": "@rubi/e2e",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Playwright End-to-End Test Suite for R.U.B.I. 2.0 across Tiers 1-4",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:ui": "playwright test --ui",
+    "test:debug": "playwright test --debug",
+    "test:tier1": "playwright test tier1-features",
+    "test:tier2": "playwright test tier2-boundaries",
+    "test:tier3": "playwright test tier3-cross-features",
+    "test:tier4": "playwright test tier4-scenarios",
+    "test:mobile": "playwright test --project=mobile-320 --project=mobile-375 --project=mobile-430",
+    "test:desktop": "playwright test --project=desktop-1280",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.50.0",
+    "@types/node": "^22.10.7",
+    "typescript": "^5.7.3"
+  }
+}
+

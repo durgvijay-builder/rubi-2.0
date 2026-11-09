@@ -1,0 +1,327 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ── Enums ────────────────────────────────────────────────────────────────────
+
+enum Role {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+enum TaskStatus {
+  PENDING_APPROVAL
+  TODO
+  IN_PROGRESS
+  BLOCKED
+  COMPLETED
+  CANCELLED
+  ARCHIVED
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum EffortLevel {
+  SMALL
+  MEDIUM
+  LARGE
+}
+
+enum ReminderStatus {
+  PENDING
+  DELIVERED
+  CANCELLED
+  FAILED
+}
+
+enum ActivityEventType {
+  EXTRACTION_STAGED
+  EXTRACTION_APPROVED
+  EXTRACTION_REJECTED
+  TASK_CREATED
+  TASK_UPDATED
+  TASK_STATUS_CHANGED
+  TASK_BLOCKED
+  TASK_UNBLOCKED
+  TASK_ARCHIVED
+  TASK_RESTORED
+  TASK_DELETED
+  TASK_APPROVED
+  TASK_EDITED
+  DEPENDENCY_ADDED
+  DEPENDENCY_REMOVED
+}
+
+// ── Multi-Tenant Workspace Model ─────────────────────────────────────────────
+
+model Workspace {
+  id             String          @id @default(uuid())
+  name           String
+  slug           String          @unique
+  createdAt      DateTime        @default(now()) @map("created_at")
+  updatedAt      DateTime        @updatedAt @map("updated_at")
+
+  users             User[]
+  tasks             Task[]
+  routines          Routine[]
+  activityEvents    ActivityEvent[]
+  categories        Category[]
+  pushSubscriptions PushSubscription[]
+  userSettings      UserSettings?
+
+  @@map("workspaces")
+}
+
+// ── User & Membership Model ──────────────────────────────────────────────────
+
+model User {
+  id             String          @id @default(uuid())
+  workspaceId    String          @map("workspace_id")
+  email          String          @unique
+  name           String
+  role           Role            @default(MEMBER)
+  createdAt      DateTime        @default(now()) @map("created_at")
+  updatedAt      DateTime        @updatedAt @map("updated_at")
+
+  workspace      Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  assignedTasks  Task[]          @relation("TaskAssignee")
+  createdTasks   Task[]          @relation("TaskCreator")
+  activityEvents ActivityEvent[]
+
+  @@index([workspaceId])
+  @@map("users")
+}
+
+// ── Core Task Model ──────────────────────────────────────────────────────────
+
+model Task {
+  id               String          @id @default(uuid())
+  workspaceId      String          @map("workspace_id")
+  creatorId        String?         @map("creator_id")
+  assigneeId       String?         @map("assignee_id")
+  title            String
+  description      String?
+  status           TaskStatus      @default(PENDING_APPROVAL)
+  priority         TaskPriority    @default(MEDIUM)
+  effort           EffortLevel     @default(MEDIUM)
+  slot             String          @default("Not decided")
+  categories       String[]        @default([])
+  deadline         DateTime?
+  scheduledStart   DateTime?       @map("scheduled_start")
+  scheduledEnd     DateTime?       @map("scheduled_end")
+  durationMins     Int             @default(60) @map("duration_mins")
+  reminderTime     DateTime?       @map("reminder_time")
+  rawTranscript    String?         @map("raw_transcript")
+  isArchived       Boolean         @default(false) @map("is_archived")
+  archivedAt       DateTime?       @map("archived_at")
+  createdAt        DateTime        @default(now()) @map("created_at")
+  updatedAt        DateTime        @updatedAt @map("updated_at")
+
+  workspace        Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  creator          User?           @relation("TaskCreator", fields: [creatorId], references: [id], onDelete: SetNull)
+  assignee         User?           @relation("TaskAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+
+  // Subtasks & Reminders
+  subtasks         Subtask[]
+  reminders        Reminder[]
+
+  // Dependency relationships (Self-referencing Many-to-Many via Join Model)
+  dependencies     TaskDependency[] @relation("TaskDependencies")
+  dependents       TaskDependency[] @relation("TaskDependents")
+  activityEvents   ActivityEvent[]
+
+  @@index([workspaceId, status])
+  @@index([workspaceId, assigneeId])
+  @@index([workspaceId, isArchived])
+  @@map("tasks")
+}
+
+// ── Explicit Task Dependency Join Model (DAG Support) ────────────────────────
+
+model TaskDependency {
+  id             String          @id @default(uuid())
+  taskId         String          @map("task_id")       // The blocked task
+  dependsOnId    String          @map("depends_on_id") // The prerequisite task
+  createdAt      DateTime        @default(now()) @map("created_at")
+
+  task           Task            @relation("TaskDependencies", fields: [taskId], references: [id], onDelete: Cascade)
+  dependsOn      Task            @relation("TaskDependents", fields: [dependsOnId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, dependsOnId])
+  @@index([taskId])
+  @@index([dependsOnId])
+  @@map("task_dependencies")
+}
+
+// ── Immutable Activity Audit Event Log ───────────────────────────────────────
+
+model ActivityEvent {
+  id             String            @id @default(uuid())
+  workspaceId    String            @map("workspace_id")
+  taskId         String?           @map("task_id")
+  actorId        String?           @map("actor_id")
+  eventType      ActivityEventType @map("event_type")
+  description    String
+  metadata       Json?             // Structured diff, tokens used, cost telemetry
+  createdAt      DateTime          @default(now()) @map("created_at")
+
+  workspace      Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  task           Task?             @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  actor          User?             @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, eventType])
+  @@index([taskId])
+  @@map("activity_events")
+}
+
+// ── Personal Task Additions: Subtasks Checklist ──────────────────────────────
+
+model Subtask {
+  id          String   @id @default(uuid())
+  taskId      String   @map("task_id")
+  title       String
+  isCompleted Boolean  @default(false) @map("is_completed")
+  order       Int      @default(0)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  task        Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId])
+  @@map("subtasks")
+}
+
+// ── Persistent Reminders Model ───────────────────────────────────────────────
+
+model Reminder {
+  id          String         @id @default(uuid())
+  taskId      String?        @map("task_id")
+  routineId   String?        @map("routine_id")
+  remindAt    DateTime       @map("remind_at")
+  type        String         @default("custom") // "pre_task" | "deadline" | "routine" | "custom"
+  status      ReminderStatus @default(PENDING)
+  message     String?
+  deliveredAt DateTime?      @map("delivered_at")
+  createdAt   DateTime       @default(now()) @map("created_at")
+  updatedAt   DateTime       @updatedAt @map("updated_at")
+
+  task        Task?          @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  routine     Routine?       @relation(fields: [routineId], references: [id], onDelete: Cascade)
+
+  @@index([taskId])
+  @@index([routineId])
+  @@index([remindAt, status])
+  @@map("reminders")
+}
+
+// ── Personal Routines & Recurring Habits Model ──────────────────────────────
+
+model Routine {
+  id             String              @id @default(uuid())
+  workspaceId    String              @map("workspace_id")
+  title          String
+  description    String?
+  category       String?
+  frequency      String              @default("DAILY") // "DAILY" | "WEEKLY"
+  daysOfWeek     Int[]               @default([1, 2, 3, 4, 5, 6, 7]) // 1=Mon, ..., 7=Sun
+  slot           String?             @default("Not decided")
+  time           String?             // e.g. "07:00"
+  isActive       Boolean             @default(true) @map("is_active")
+  targetPerWeek  Int?                @map("target_per_week")
+  reminderTime   String?             @map("reminder_time")
+  createdAt      DateTime            @default(now()) @map("created_at")
+  updatedAt      DateTime            @updatedAt @map("updated_at")
+
+  workspace      Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  occurrences    RoutineOccurrence[]
+  reminders      Reminder[]
+
+  @@index([workspaceId, isActive])
+  @@map("routines")
+}
+
+// ── Daily/Weekly Occurrence Records for Routines ─────────────────────────────
+
+model RoutineOccurrence {
+  id             String    @id @default(uuid())
+  routineId      String    @map("routine_id")
+  date           String    // Timezone-safe YYYY-MM-DD
+  status         String    @default("COMPLETED") // "COMPLETED" | "SKIPPED"
+  completedAt    DateTime? @map("completed_at")
+  notes          String?
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  routine        Routine   @relation(fields: [routineId], references: [id], onDelete: Cascade)
+
+  @@unique([routineId, date])
+  @@index([routineId])
+  @@index([date])
+  @@map("routine_occurrences")
+}
+
+// ── Personal Task Categories Model ──────────────────────────────────────────
+
+model Category {
+  id          String    @id @default(uuid())
+  workspaceId String    @map("workspace_id")
+  name        String
+  color       String?   @default("#71717a")
+  isDefault   Boolean   @default(false) @map("is_default")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, name])
+  @@index([workspaceId])
+  @@map("categories")
+}
+
+// ── Browser Web Push Subscriptions ──────────────────────────────────────────
+
+model PushSubscription {
+  id          String    @id @default(uuid())
+  workspaceId String    @map("workspace_id")
+  endpoint    String    @unique
+  p256dh      String
+  auth        String
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@map("push_subscriptions")
+}
+
+// ── Workspace / User Personalization Preferences & Customization Defaults ────
+
+model UserSettings {
+  id                                String    @id @default(uuid())
+  workspaceId                       String    @unique @map("workspace_id")
+  timezone                          String    @default("Asia/Kolkata")
+  defaultScheduleReminderTime       String    @default("09:00") @map("default_schedule_reminder_time")
+  defaultDeadlineReminderDaysBefore Int       @default(2) @map("default_deadline_reminder_days_before")
+  defaultDeadlineReminderTime       String    @default("09:00") @map("default_deadline_reminder_time")
+  customSlots                       String[]  @default([]) @map("custom_slots")
+  autoScheduleReminder              Boolean   @default(true) @map("auto_schedule_reminder")
+  autoDeadlineReminder              Boolean   @default(true) @map("auto_deadline_reminder")
+  createdAt                         DateTime  @default(now()) @map("created_at")
+  updatedAt                         DateTime  @updatedAt @map("updated_at")
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@map("user_settings")
+}

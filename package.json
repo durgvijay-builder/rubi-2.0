@@ -1,0 +1,29 @@
+{
+  "name": "rubi-2.0",
+  "version": "2.0.0",
+  "private": true,
+  "description": "R.U.B.I. 2.0 - Responsive User Backlog & Intelligence (Voice-First AI Execution Assistant)",
+  "packageManager": "pnpm@12.15.0",
+  "scripts": {
+    "build": "pnpm --filter ./packages/* --filter ./apps/* run build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "pnpm --recursive run typecheck",
+    "prisma:generate": "pnpm --filter @rubi/server prisma generate",
+    "prisma:push": "pnpm --filter @rubi/server prisma db push",
+    "prisma:seed": "pnpm --filter @rubi/server prisma db seed",
+    "prisma:seed:demo": "pnpm --filter @rubi/server prisma:seed:demo",
+    "clean": "pnpm --recursive exec rimraf dist",
+    "dev": "pnpm --parallel run dev"
+  },
+  "devDependencies": {
+    "playwright": "^1.65.0",
+    "rimraf": "^6.0.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
